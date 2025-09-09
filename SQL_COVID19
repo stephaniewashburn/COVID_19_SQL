@@ -1,0 +1,61 @@
+-- Monthly NEW cases, last 3 months per country (US, China, India)
+WITH daily_totals AS (
+  SELECT
+    [Country/Region] AS country,
+    date(Date)       AS d,
+    SUM(Confirmed)   AS cum_cases              -- sum across provinces if present
+  FROM full_data
+  WHERE [Country/Region] IN ('US','China','India')
+  GROUP BY [Country/Region], date(Date)
+),
+daily_new AS (
+  SELECT
+    country,
+    d,
+    -- guard against data corrections creating negatives
+    MAX(0, cum_cases - LAG(cum_cases) OVER (PARTITION BY country ORDER BY d)) AS new_cases
+  FROM daily_totals
+),
+monthly_new AS (
+  SELECT
+    country,
+    strftime('%Y-%m', d) AS month,
+    SUM(new_cases)       AS monthly_new_cases
+  FROM daily_new
+  GROUP BY country, strftime('%Y-%m', d)
+),
+ranked AS (
+  SELECT
+    country, month, monthly_new_cases,
+    ROW_NUMBER() OVER (PARTITION BY country ORDER BY month DESC) AS rn
+  FROM monthly_new
+),
+pivot3 AS (
+  -- keep only the latest 3 months and pivot to columns
+  SELECT
+    country,
+    MAX(CASE WHEN rn = 1 THEN month END)               AS m1_month,   -- latest
+    MAX(CASE WHEN rn = 1 THEN monthly_new_cases END)   AS m1_cases,
+    MAX(CASE WHEN rn = 2 THEN month END)               AS m2_month,   -- prev
+    MAX(CASE WHEN rn = 2 THEN monthly_new_cases END)   AS m2_cases,
+    MAX(CASE WHEN rn = 3 THEN month END)               AS m3_month,   -- prev2
+    MAX(CASE WHEN rn = 3 THEN monthly_new_cases END)   AS m3_cases
+  FROM ranked
+  WHERE rn <= 3
+  GROUP BY country
+)
+SELECT
+  country,
+  m1_month AS latest_month,
+  m1_cases AS latest_cases,
+  m2_month AS prev_month,
+  m2_cases AS prev_cases,
+  m3_month AS prev2_month,
+  m3_cases AS prev2_cases,
+  -- extras: month-over-month deltas for the latest month
+  (m1_cases - m2_cases)                                  AS mom_change,
+  ROUND(100.0 * (m1_cases - m2_cases) / NULLIF(m2_cases,0), 1) AS mom_pct,
+  -- 3-month total
+  (m1_cases + m2_cases + m3_cases)                       AS total_3mo
+FROM pivot3
+ORDER BY country;
